@@ -8,7 +8,6 @@ from interfaces.msg import QuadControlTarget, QuadState
 from rcl_interfaces.srv import SetParameters
 from rclpy.node import Node
 
-import matplotlib.pyplot as plt
 
 class WalkingController(Node):
     def __init__(self):
@@ -24,7 +23,6 @@ class WalkingController(Node):
 
         self.log_file = "log.txt"
         self.log_header = False
-        self.path_trace = []  # 🟢 for path visualization
         with open(self.log_file, "w") as log_file:
             print("Log file cleared")
 
@@ -45,33 +43,36 @@ class WalkingController(Node):
         while self.quad_state is None:
             time.sleep(0.1)
 
-        print("Starting square motion (coordinate-based)")
+        print("Starting square motion (square1-style accurate control)")
         self.set_gait("WALKING_TROT")
-
-        radius = 0.5  # 1m side
-        speed = 0.2
-        side_duration = 5
-        turn_duration = 3.2  # slightly longer for better alignment
-
-        x0 = self.quad_state.pose.pose.position.x
-        y0 = self.quad_state.pose.pose.position.y
-        start_time = time.time()
-        corners_hit = 0
-        tolerance = 0.1
-
-        def distance(x1, y1, x2, y2):
-            return math.hypot(x2 - x1, y2 - y1)
-
-        points = [(0, 0), (1, 0), (1, 1), (0, 1)]  # unit square in local frame
-        x_start = self.quad_state.pose.pose.position.x
-        y_start = self.quad_state.pose.pose.position.y
 
         for i in range(4):
             print(f"Walking side {i + 1}...")
-            self.send_motion(speed, 0.0, 0.0, side_duration)
-            print("Turning 90 degrees...")
-            self.send_motion(0.0, 0.0, 0.5, turn_duration, step_time=0.05)
+            x0 = self.quad_state.pose.pose.position.x
+            y0 = self.quad_state.pose.pose.position.y
+            timeout = time.time() + 10
+            while True:
+                x = self.quad_state.pose.pose.position.x
+                y = self.quad_state.pose.pose.position.y
+                dist = math.hypot(x - x0, y - y0)
+                if dist >= 1.02 or time.time() > timeout:
+                    break
+                self.send_motion_once(0.2, 0.0, 0.0)
+                time.sleep(0.02)
 
+            print("Turning 90 degrees...")
+            initial_yaw = self.get_yaw()
+            target_yaw = (initial_yaw + math.pi/2) % (2 * math.pi)
+            timeout = time.time() + 10
+            while True:
+                current_yaw = self.get_yaw()
+                yaw_diff = abs((current_yaw - target_yaw + math.pi) % (2 * math.pi) - math.pi)
+                if yaw_diff < 0.04 or time.time() > timeout:
+                    break
+                self.send_motion_once(0.0, 0.0, 0.5)
+                time.sleep(0.02)
+
+        self.send_motion(0.0, 0.0, 0.0, 2.0)
         self.stop_motion()
 
     def move_triangle(self):
@@ -79,24 +80,38 @@ class WalkingController(Node):
         while self.quad_state is None:
             time.sleep(0.1)
 
-        print("Starting triangle motion (coordinate-based)")
+        print("Starting triangle motion (precise pose-based)")
+        print("Warming up... stepping in place")
+        self.send_motion(0.0, 0.0, 0.0, 2.0)
         self.set_gait("WALKING_TROT")
 
-        radius = 0.5  # 1m side
-        speed = 0.2
-        side_duration = 5
-        turn_duration = 4.6  # slightly more than 120 degrees for compensation
+        for side in range(3):
+            print(f"Walking side {side + 1}...")
+            x_start = self.quad_state.pose.pose.position.x
+            y_start = self.quad_state.pose.pose.position.y
 
-        x0 = self.quad_state.pose.pose.position.x
-        y0 = self.quad_state.pose.pose.position.y
-        tolerance = 0.1
+            while True:
+                x = self.quad_state.pose.pose.position.x
+                y = self.quad_state.pose.pose.position.y
+                dist = math.hypot(x - x_start, y - y_start)
+                if dist >= 1.02:
+                    break
+                self.send_motion_once(0.2, 0.0, 0.0)
+                time.sleep(0.02)
 
-        for i in range(3):
-            print(f"Walking side {i + 1}...")
-            self.send_motion(speed, 0.0, 0.0, side_duration)
             print("Turning 120 degrees...")
-            self.send_motion(0.0, 0.0, 0.5, turn_duration, step_time=0.05)
+            start_yaw = self.get_yaw()
+            target_yaw = (start_yaw + 2 * math.pi / 3) % (2 * math.pi)
 
+            while True:
+                current_yaw = self.get_yaw()
+                yaw_diff = abs((current_yaw - target_yaw + math.pi) % (2 * math.pi) - math.pi)
+                if yaw_diff < 0.04:
+                    break
+                self.send_motion_once(0.0, 0.0, 0.5)
+                time.sleep(0.02)
+
+        self.send_motion(0.0, 0.0, 0.0, 2.0)
         self.stop_motion()
 
     def move_circle(self):
@@ -104,7 +119,9 @@ class WalkingController(Node):
         while self.quad_state is None:
             time.sleep(0.1)
 
-        print("Starting circular motion (coordinate-based)")
+        print("Starting circular motion (precise position-based)")
+        print("Warming up... stepping in place")
+        self.send_motion(0.0, 0.0, 0.0, 2.0)
         self.set_gait("WALKING_TROT")
 
         radius = 0.5
@@ -122,20 +139,21 @@ class WalkingController(Node):
         x0 = self.quad_state.pose.pose.position.x
         y0 = self.quad_state.pose.pose.position.y
         start_time = time.time()
-        min_duration = 10  # seconds before checking proximity
+        min_duration = 13  # increased for better closure
 
         while True:
             x = self.quad_state.pose.pose.position.x
             y = self.quad_state.pose.pose.position.y
             dist = math.hypot(x - x0, y - y0)
 
-            if time.time() - start_time > min_duration and dist < 0.15:
+            if time.time() - start_time > min_duration and dist < 0.1:
                 print("✅ Circle complete based on position.")
                 break
 
             self.quad_control_target_pub.publish(cmdMsg)
             time.sleep(0.01)
 
+        self.send_motion(0.0, 0.0, 0.0, 2.0)
         self.stop_motion()
 
     def set_gait(self, gait_name):
@@ -160,6 +178,22 @@ class WalkingController(Node):
             self.quad_control_target_pub.publish(cmdMsg)
             time.sleep(step_time)
 
+    def send_motion_once(self, x_dot, y_dot, theta_dot):
+        cmdMsg = QuadControlTarget()
+        cmdMsg.body_x_dot = x_dot
+        cmdMsg.body_y_dot = y_dot
+        cmdMsg.world_z = 0.30
+        cmdMsg.hybrid_theta_dot = theta_dot
+        cmdMsg.pitch = 0.0
+        cmdMsg.roll = 0.0
+        self.quad_control_target_pub.publish(cmdMsg)
+
+    def get_yaw(self):
+        q = self.quad_state.pose.pose.orientation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
     def stop_motion(self):
         print("Stopping motion")
         self.set_gait("STAND")
@@ -180,15 +214,8 @@ class WalkingController(Node):
         print("🧘 Robot fully stabilized.")
 
     def reset_posture(self):
-        print("🔄 Resetting robot posture...")
-
-        # 切换控制器到 WALKING_TROT，然后再 STAND，模拟初始切换过程
-        self.set_gait("WALKING_TROT")
-        time.sleep(0.5)
+        print("🔄 Resetting robot posture (square1 style)...")
         self.set_gait("STAND")
-        time.sleep(1.0)
-
-        # 发布一个清零指令但不主动调整 pitch/roll（保持控制器默认）
         cmdMsg = QuadControlTarget()
         cmdMsg.body_x_dot = 0.0
         cmdMsg.body_y_dot = 0.0
@@ -197,31 +224,16 @@ class WalkingController(Node):
         cmdMsg.pitch = 0.0
         cmdMsg.roll = 0.0
 
-        for _ in range(10):
+        for _ in range(5):  # shorter warmup, square1 style
             self.quad_control_target_pub.publish(cmdMsg)
             time.sleep(0.1)
 
         print("✅ Posture reset complete")
 
-        def show_path(self):
-           if not self.path_trace:
-            print("No path data to visualize.")
-            return
-        x_vals = [p[0] for p in self.path_trace]
-        y_vals = [p[1] for p in self.path_trace]
-        plt.figure(figsize=(6,6))
-        plt.plot(x_vals, y_vals, marker='o', linestyle='-')
-        plt.title("Robot Path")
-        plt.xlabel("X position")
-        plt.ylabel("Y position")
-        plt.axis('equal')
-        plt.grid(True)
-        plt.show()
-
+        
     def log_callback(self):
         if self.quad_state is not None:
             with open(self.log_file, "a") as log_file:
-                self.path_trace.append((self.quad_state.pose.pose.position.x, self.quad_state.pose.pose.position.y))
                 if not self.log_header:
                     log_file.write("x_pos, y_pos, z_pos, x_vel, y_vel, z_vel, x_ang_vel, y_ang_vel, z_ang_vel\n")
                     self.log_header = True
@@ -244,15 +256,13 @@ def main(args=None):
     runner.start()
 
     while rclpy.ok():
-        shape = input("Enter shape to walk (square, triangle, circle, path, or quit): ").strip().lower()
+        shape = input("Enter shape to walk (square, triangle, circle, or quit): ").strip().lower()
         if shape == "square":
             walking_controller.move_square()
         elif shape == "triangle":
             walking_controller.move_triangle()
         elif shape == "circle":
             walking_controller.move_circle()
-        elif shape == "path":
-            walking_controller.show_path()
         elif shape == "quit":
             break
         else:
